@@ -1,108 +1,73 @@
 # streamlit_app.py
 # ------------------------------------------------------------
-# Gold Dashboard — Tab 1 (Gold Prices)
-# ------------------------------------------------------------
-# Features
-# - Data source: paste Goldhub CSV URL or upload CSV
-# - Period presets + custom date range picker
-# - Interactive chart (Plotly) with hover tooltips and range slider
-# - Point-in-time price lookup (date inspector)
-# - Max drawdown for selected window (level + dates)
-# - Bull/Bear/Correction regime detection with adjustable thresholds
-# - Summary table of regimes inside the selected window
+# Gold Dashboard — Tab 1 (Gold Prices)  [No sidebar, local CSV, currency picker]
 # ------------------------------------------------------------
 
 import io
 import math
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Optional, Tuple, List
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from pathlib import Path
 
 # -------------------------
 # Page / layout
 # -------------------------
-st.set_page_config(
-    page_title="Gold Dashboard",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
+st.set_page_config(page_title="Gold Dashboard", layout="wide")
 st.title("🏅 Gold Dashboard")
 st.caption("Tab 1 · Gold prices, drawdowns, and bull/bear regimes (1969–present)")
+
+# Local CSV path (change if you use a different filename)
+DATA_FILE = Path("./gold_prices.csv")
 
 # -------------------------
 # Helpers
 # -------------------------
-@st.cache_data(show_spinner=False)
-def _read_csv_from_bytes(data: bytes) -> pd.DataFrame:
-    df = pd.read_csv(io.BytesIO(data))
-    return df
-
-@st.cache_data(show_spinner=True)
-def _fetch_csv(url: str) -> pd.DataFrame:
-    return pd.read_csv(url)
-
-
-def normalize_gold_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Try to coerce a variety of Goldhub CSV layouts into [date, price] cols.
-    Expected outputs:
-      - date: datetime64[ns]
-      - price: float (USD/oz or whatever the CSV provides)
-    We try common column names from Goldhub and generic CSVs.
+def normalize_multi(df: pd.DataFrame) -> pd.DataFrame:
     """
-    # Trim whitespace in headers
+    Normalize a variety of CSV layouts into:
+      - 'date' column (datetime)
+      - 1+ numeric columns (treated as currencies/price series)
+    Keeps ALL numeric columns as candidates for currency selection.
+    """
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Candidate date columns
-    date_cols = [
-        c for c in df.columns
-        if str(c).lower() in {"date", "time", "period"} or "date" in str(c).lower()
-    ]
-    price_cols = [
-        c for c in df.columns
-        if any(k in str(c).lower() for k in ["usd", "price", "value", "close", "gold"])
-        and str(c).lower() not in {"date", "time", "period"}
-    ]
+    # Find date-like column
+    date_col = None
+    for c in df.columns:
+        if c.lower() in {"date", "time", "period"} or "date" in c.lower():
+            date_col = c
+            break
+    if date_col is None:
+        # as a fallback, if first column looks like dates when parsed
+        try:
+            probe = pd.to_datetime(df.iloc[:, 0], errors="coerce")
+            if probe.notna().sum() > 0:
+                date_col = df.columns[0]
+        except Exception:
+            pass
+    if date_col is None:
+        raise ValueError("No date-like column found.")
 
-    # Fallback: if two columns only, assume first is date, second is price
-    if not date_cols and not price_cols and df.shape[1] >= 2:
-        date_cols = [df.columns[0]]
-        price_cols = [df.columns[1]]
+    # Parse date and clean
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.tz_localize(None)
+    df = df.dropna(subset=[date_col]).sort_values(date_col)
 
-    # Pick first candidate
-    date_col = date_cols[0]
-    # Prefer a USD-like column if available
-    if price_cols:
-        # heuristic: prefer columns with 'usd'
-        price_cols_sorted = sorted(price_cols, key=lambda c: ("usd" not in str(c).lower(), str(c)))
-        price_col = price_cols_sorted[0]
-    else:
-        # if no explicit price col, try the 2nd column
-        price_col = df.columns[1]
+    # Keep numeric columns as currency options (exclude the date col)
+    value_cols = [c for c in df.columns if c != date_col and pd.api.types.is_numeric_dtype(df[c])]
+    if not value_cols:
+        raise ValueError("No numeric columns found for prices/currencies.")
 
-    out = df[[date_col, price_col]].rename(columns={date_col: "date", price_col: "price"}).copy()
-
-    # Parse date
-    out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.tz_localize(None)
-    out = out.dropna(subset=["date"]).sort_values("date")
-
-    # Price to numeric
-    out["price"] = pd.to_numeric(out["price"], errors="coerce")
-    out = out.dropna(subset=["price"])
-
-    # Drop duplicates and ensure daily (no need to resample by default)
-    out = out.drop_duplicates(subset=["date"]).reset_index(drop=True)
-
+    out = df[[date_col] + value_cols].dropna().drop_duplicates(subset=[date_col]).reset_index(drop=True)
+    out = out.rename(columns={date_col: "date"})
     return out
 
-
 def compute_drawdown(df: pd.DataFrame) -> pd.DataFrame:
-    """Add rolling peak, drawdown series, and peak/trough markers."""
     s = df["price"].astype(float)
     rolling_peak = s.cummax()
     drawdown = s / rolling_peak - 1.0
@@ -112,33 +77,45 @@ def compute_drawdown(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def window_stats(df: pd.DataFrame) -> Tuple[float, Optional[pd.Timestamp], Optional[pd.Timestamp]]:
-    """Return max drawdown (as -x.xx), peak date, trough date for the window."""
+def window_stats(df: pd.DataFrame):
+    """
+    Returns:
+      mdd_frac (negative, e.g. -0.32),
+      peak_date, trough_date,
+      peak_price, trough_price,
+      mdd_abs (positive number = peak_price - trough_price)
+    """
     if df.empty:
-        return float("nan"), None, None
+        return float("nan"), None, None, None, None, None
+
     s = df["price"].astype(float)
     roll = s.cummax()
     dd = s / roll - 1.0
-    mdd = dd.min()
-    trough_idx = dd.idxmin() if not dd.isna().all() else None
+
+    mdd = float(dd.min())
+    trough_idx = int(dd.idxmin()) if not dd.isna().all() else None
     peak_idx = None
     if trough_idx is not None:
-        # peak is the last time the rolling max was set before trough
         roll_eq = roll.loc[:trough_idx]
         peak_val = roll_eq.max()
-        # get first occurrence of that peak
-        peak_idx = roll_eq[roll_eq == peak_val].index[0]
+        peak_idx = int(roll_eq[roll_eq == peak_val].index[0])
+
     peak_date = df.loc[peak_idx, "date"] if peak_idx is not None else None
     trough_date = df.loc[trough_idx, "date"] if trough_idx is not None else None
-    return float(mdd), peak_date, trough_date
+    peak_price = float(df.loc[peak_idx, "price"]) if peak_idx is not None else None
+    trough_price = float(df.loc[trough_idx, "price"]) if trough_idx is not None else None
+    mdd_abs = (peak_price - trough_price) if (peak_price is not None and trough_price is not None) else None
+
+    return mdd, peak_date, trough_date, peak_price, trough_price, mdd_abs
 
 
 def detect_regimes(df: pd.DataFrame, bear_threshold: float = -0.20, correction_threshold: float = -0.10) -> pd.DataFrame:
-    """Label each row as Bull / Correction / Bear based on drawdown from the most recent peak.
-    - drawdown ≤ -20% → Bear
-    - -20% < drawdown ≤ -10% → Correction
-    - drawdown > -10% → Bull
-    Returns df with a 'regime' column and compacted segments table.
+    """
+    Label rows as Bull / Correction / Bear by drawdown from most recent peak.
+      drawdown ≤ bear_threshold       -> Bear
+      correction_threshold < drawdown -> Bull
+      else                            -> Correction
+    Returns (labeled_df, segments_table).
     """
     x = compute_drawdown(df)
     dd = x["drawdown"].values
@@ -146,7 +123,7 @@ def detect_regimes(df: pd.DataFrame, bear_threshold: float = -0.20, correction_t
               np.where(dd <= correction_threshold, "Correction", "Bull"))
     x["regime"] = labels
 
-    # Build segments (start when label changes)
+    # Compact segments where label is constant
     segs = []
     start_idx = 0
     for i in range(1, len(x)):
@@ -174,207 +151,155 @@ def detect_regimes(df: pd.DataFrame, bear_threshold: float = -0.20, correction_t
     seg_df = pd.DataFrame.from_records(records)
     return x, seg_df
 
-
 def human_pct(x: float) -> str:
     return ("{:+.2f}%".format(100 * x)) if pd.notna(x) else "—"
 
-
 # -------------------------
-# Sidebar — Data source
+# Load local CSV
 # -------------------------
-with st.sidebar:
-    st.header("Data source")
-    st.markdown(
-        "Paste a **Goldhub CSV URL** (e.g., from the *Download data* button on their page),\n"
-        "or upload your own CSV with columns like `Date, USD (AM)` or `date, price`."
-    )
-    default_url = ""
-    csv_url = st.text_input("Gold price CSV URL (optional)", value=default_url, placeholder="https://.../gold-prices.csv")
-    uploaded = st.file_uploader("...or upload a CSV", type=["csv"])\
-
-    st.divider()
-    st.subheader("Regime thresholds")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        correction_thr = st.number_input("Correction ≤", value=-0.10, step=0.01, format="%.2f")
-    with col_b:
-        bear_thr = st.number_input("Bear ≤", value=-0.20, step=0.01, format="%.2f")
-
-    st.caption("Thresholds are applied to drawdown from the most recent peak in the selected window.")
-
-# -------------------------
-# Load data
-# -------------------------
-raw_df: Optional[pd.DataFrame] = None
-err = None
-if uploaded is not None:
-    try:
-        raw_df = _read_csv_from_bytes(uploaded.getvalue())
-    except Exception as e:
-        err = f"Failed to read uploaded CSV: {e}"
-elif csv_url:
-    try:
-        raw_df = _fetch_csv(csv_url)
-    except Exception as e:
-        err = f"Failed to fetch CSV: {e}"
-
-if err:
-    st.error(err)
-
-if raw_df is None:
-    st.info("Provide a CSV URL from Goldhub or upload a CSV to begin.")
+if not DATA_FILE.exists():
+    st.error(f"Local CSV not found: `{DATA_FILE.name}`. Put it next to this file or update DATA_FILE.")
     st.stop()
 
-# Normalize
 try:
-    gold = normalize_gold_df(raw_df)
+    raw_df = pd.read_csv(DATA_FILE)
+    data = normalize_multi(raw_df)  # -> date + many numeric columns (currencies)
 except Exception as e:
-    st.error(f"Could not normalize the CSV (expecting date/price columns). Error: {e}")
+    st.error(f"Failed to read/normalize `{DATA_FILE.name}`: {e}")
     st.stop()
 
-if gold.empty:
-    st.warning("No rows after parsing the CSV. Check the column names and data.")
+min_dt = data["date"].min().date()
+max_dt = data["date"].max().date()
+
+# -------------------------
+# Controls row (main page)
+# -------------------------
+st.subheader("Price Explorer")
+
+# Currency options = all numeric columns except 'date'
+currency_cols = [c for c in data.columns if c != "date" and pd.api.types.is_numeric_dtype(data[c])]
+if not currency_cols:
+    st.error("No numeric currency columns found in the CSV.")
     st.stop()
 
-min_dt = gold["date"].min().date()
-max_dt = gold["date"].max().date()
+c1, c2, c3 = st.columns([1.3, 1.3, 2.4])
+with c1:
+    currency = st.selectbox("Currency column", currency_cols, index=0)
+with c2:
+    # Regime thresholds (moved from sidebar to main page)
+    correction_thr = st.number_input("Correction threshold (≤)", value=-0.10, step=0.01, format="%.2f")
+    bear_thr = st.number_input("Bear threshold (≤)", value=-0.20, step=0.01, format="%.2f")
+with c3:
+    # Period presets
+    preset = st.radio("Period", ["MAX", "YTD", "1Y", "5Y", "10Y", "Custom"], horizontal=True, index=3)
 
-# -------------------------
-# Tabs
-# -------------------------
-tab1, = st.tabs(["Gold Prices"])
+# Determine window
+today = max_dt
+if preset == "MAX":
+    start_dt, end_dt = min_dt, max_dt
+elif preset == "YTD":
+    start_dt, end_dt = date(today.year, 1, 1), today
+elif preset == "1Y":
+    start_dt, end_dt = today - timedelta(days=365), today
+elif preset == "5Y":
+    start_dt, end_dt = today - timedelta(days=365*5), today
+elif preset == "10Y":
+    start_dt, end_dt = today - timedelta(days=365*10), today
+else:
+    # sensible default for Custom
+    start_dt, end_dt = data["date"].quantile(0.6).date(), today
 
-with tab1:
-    st.subheader("Price Explorer")
+if preset == "Custom":
+    start_dt, end_dt = st.date_input("Custom date range", value=(start_dt, end_dt),
+                                     min_value=min_dt, max_value=max_dt)
+    if isinstance(start_dt, (list, tuple)):
+        start_dt, end_dt = start_dt
 
-    # Presets
-    preset = st.segmented_control(
-        "Period",
-        options=["MAX", "YTD", "1Y", "5Y", "10Y", "Custom"],
-        default="5Y",
-    )
+# Build a working window with the selected currency
+work = data[["date", currency]].rename(columns={currency: "price"})
+mask = (work["date"].dt.date >= start_dt) & (work["date"].dt.date <= end_dt)
+win = work.loc[mask].reset_index(drop=True)
 
-    # Default window
-    today = max_dt
-    if preset == "MAX":
-        start_dt, end_dt = min_dt, max_dt
-    elif preset == "YTD":
-        start_dt, end_dt = date(today.year, 1, 1), today
-    elif preset == "1Y":
-        start_dt, end_dt = today - timedelta(days=365), today
-    elif preset == "5Y":
-        start_dt, end_dt = today - timedelta(days=365*5), today
-    elif preset == "10Y":
-        start_dt, end_dt = today - timedelta(days=365*10), today
-    else:
-        start_dt, end_dt = gold["date"].quantile(0.6).date(), today
+if win.empty:
+    st.warning("No data in the selected range. Adjust your dates.")
+    st.stop()
 
-    if preset == "Custom":
-        start_dt, end_dt = st.date_input(
-            "Custom date range",
-            value=(start_dt, end_dt),
-            min_value=min_dt,
-            max_value=max_dt,
-        )
-        if isinstance(start_dt, (list, tuple)):
-            start_dt, end_dt = start_dt
+# Drawdown + regimes for the window
+dd_df = compute_drawdown(win)
+regimes_df, seg_df = detect_regimes(win, bear_threshold=bear_thr, correction_threshold=correction_thr)
 
-    mask = (gold["date"].dt.date >= start_dt) & (gold["date"].dt.date <= end_dt)
-    win = gold.loc[mask].reset_index(drop=True)
+# ---------------- Chart -----------------
+fig = go.Figure()
+fig.add_trace(go.Scatter(
+    x=win["date"], y=win["price"], mode="lines",
+    name=f"Price ({currency})",
+    hovertemplate="%{x|%Y-%m-%d}<br>%{y:.2f}<extra></extra>",
+))
+# Shade Bear regimes
+bear_spans: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
+cur_start = None
+for i in range(len(regimes_df)):
+    d = regimes_df.loc[i, "date"]
+    label = regimes_df.loc[i, "regime"]
+    if label == "Bear" and cur_start is None:
+        cur_start = d
+    if label != "Bear" and cur_start is not None:
+        bear_spans.append((cur_start, regimes_df.loc[i-1, "date"]))
+        cur_start = None
+if cur_start is not None:
+    bear_spans.append((cur_start, regimes_df.loc[len(regimes_df)-1, "date"]))
 
-    if win.empty:
-        st.warning("No data in the selected range. Adjust your dates.")
-        st.stop()
+for a, b in bear_spans:
+    fig.add_vrect(x0=a, x1=b, fillcolor="red", opacity=0.10, line_width=0, layer="below")
 
-    # Drawdown + regimes for the window
-    dd_df = compute_drawdown(win)
-    regimes_df, seg_df = detect_regimes(win, bear_threshold=bear_thr, correction_threshold=correction_thr)
+fig.update_layout(
+    margin=dict(l=10, r=10, t=10, b=10),
+    height=520,
+    hovermode="x unified",
+    xaxis_rangeslider_visible=True,
+    xaxis_title="Date",
+    yaxis_title=f"Price ({currency})",
+)
+st.plotly_chart(fig, use_container_width=True)
 
-    # ---------------- Chart -----------------
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=win["date"], y=win["price"], mode="lines",
-        name="Price",
-        hovertemplate="%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
-    ))
+# ------------- Metrics row --------------
+mdd, peak_dt, trough_dt, peak_px, trough_px, mdd_abs = window_stats(win)
 
-    # Shade Bear regimes
-    # Build segments inside window where regime == 'Bear'
-    bear_spans: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
-    cur_start = None
-    for i in range(len(regimes_df)):
-        d = regimes_df.loc[i, "date"]
-        label = regimes_df.loc[i, "regime"]
-        if label == "Bear" and cur_start is None:
-            cur_start = d
-        if label != "Bear" and cur_start is not None:
-            bear_spans.append((cur_start, regimes_df.loc[i-1, "date"]))
-            cur_start = None
-    if cur_start is not None:
-        bear_spans.append((cur_start, regimes_df.loc[len(regimes_df)-1, "date"]))
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Max drawdown (%)", human_pct(mdd))
+col2.metric("Max drawdown (abs)", f"{mdd_abs:,.2f} {currency}" if mdd_abs is not None else "—")
+col3.metric("Peak before MDD", peak_dt.strftime("%Y-%m-%d") if peak_dt else "—")
+col4.metric("Trough of MDD", trough_dt.strftime("%Y-%m-%d") if trough_dt else "—")
+if peak_dt and trough_dt:
+    col5.metric("Peak→Trough days", (trough_dt.date() - peak_dt.date()).days)
+else:
+    col5.metric("Peak→Trough days", "—")
 
-    for a, b in bear_spans:
-        fig.add_vrect(x0=a, x1=b, fillcolor="red", opacity=0.10, line_width=0, layer="below")
 
-    fig.update_layout(
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=520,
-        hovermode="x unified",
-        xaxis_rangeslider_visible=True,
-        xaxis_title="Date",
-        yaxis_title="Price",
-    )
+st.divider()
 
-    st.plotly_chart(fig, use_container_width=True)
+# ------------- Price inspector -----------
+st.markdown("### 🔎 Point-in-time price")
+inspect_dt = st.date_input("Pick a date to inspect", value=end_dt, min_value=start_dt, max_value=end_dt)
+sidx = win["date"].searchsorted(pd.to_datetime(inspect_dt))
+candidates = []
+if 0 <= sidx < len(win):
+    candidates.append((abs((win.loc[sidx, "date"].date() - inspect_dt).days), sidx))
+if sidx - 1 >= 0:
+    candidates.append((abs((win.loc[sidx-1, "date"].date() - inspect_dt).days), sidx-1))
+if candidates:
+    _, best_idx = sorted(candidates)[0]
+    row = win.loc[best_idx]
+    st.info(f"**{row['date'].date()}** · {row['price']:.2f} ({currency})")
 
-    # ------------- Metrics row --------------
-    mdd, peak_dt, trough_dt = window_stats(win)
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Max drawdown", human_pct(mdd))
-    col2.metric("Peak before MDD", peak_dt.strftime("%Y-%m-%d") if peak_dt is not None else "—")
-    col3.metric("Trough of MDD", trough_dt.strftime("%Y-%m-%d") if trough_dt is not None else "—")
-    if peak_dt is not None and trough_dt is not None:
-        col4.metric("Peak→Trough days", (trough_dt.date() - peak_dt.date()).days)
-    else:
-        col4.metric("Peak→Trough days", "—")
+# ------------- Regime table --------------
+st.markdown("### 📈 Regimes in window")
+if not seg_df.empty:
+    pretty = seg_df.copy()
+    pretty["Return"] = pretty["Return"].map(human_pct)
+    pretty["Max Drawdown in Segment"] = pretty["Max Drawdown in Segment"].map(human_pct)
+    st.dataframe(pretty, use_container_width=True, hide_index=True)
+else:
+    st.write("No regimes identified in this window.")
 
-    st.divider()
-
-    # ------------- Price inspector -----------
-    st.markdown("### 🔎 Point‑in‑time price")
-    inspect_dt = st.date_input("Pick a date to inspect", value=end_dt, min_value=start_dt, max_value=end_dt)
-
-    # nearest date (forward/backward)
-    sidx = win["date"].searchsorted(pd.to_datetime(inspect_dt))
-    candidates = []
-    if 0 <= sidx < len(win):
-        candidates.append((abs((win.loc[sidx, "date"].date() - inspect_dt).days), sidx))
-    if sidx - 1 >= 0:
-        candidates.append((abs((win.loc[sidx-1, "date"].date() - inspect_dt).days), sidx-1))
-
-    if candidates:
-        _, best_idx = sorted(candidates)[0]
-        row = win.loc[best_idx]
-        st.info(f"**{row['date'].date()}** · ${row['price']:.2f}")
-
-    # ------------- Regime table --------------
-    st.markdown("### 📈 Regimes in window")
-    if not seg_df.empty:
-        pretty = seg_df.copy()
-        pretty["Return"] = pretty["Return"].map(human_pct)
-        pretty["Max Drawdown in Segment"] = pretty["Max Drawdown in Segment"].map(human_pct)
-        st.dataframe(pretty, use_container_width=True, hide_index=True)
-    else:
-        st.write("No regimes identified in this window.")
-
-    st.caption(
-        "Shaded red bands indicate **Bear** periods using your thresholds. "
-        "You can tune these in the left sidebar."
-    )
-
-# -------------------------
-# Notes
-# -------------------------
-# - To get the Goldhub CSV, visit gold.org → Goldhub → Data → Gold prices, click **Download data**.
-# - If their CSV schema differs, the normalizer tries to detect `date` and a price-like column automatically.
-# - You can swap Plotly for Altair if preferred. Plotly is used here for the range slider and rich hover.
+st.caption("Shaded red bands indicate **Bear** periods using the thresholds above.")
