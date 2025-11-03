@@ -17,9 +17,8 @@ from pathlib import Path
 # -------------------------
 # Page / layout
 # -------------------------
-st.set_page_config(page_title="Gold Dashboard", layout="wide")
+st.set_page_config(page_title="Gold Dashboard", layout="centered")
 st.title("🏅 Gold Dashboard")
-st.caption("Tab 1 · Gold prices, drawdowns, and bull/bear regimes (1969–present)")
 
 # Local CSV path (change if you use a different filename)
 DATA_FILE = Path("./gold_prices.csv")
