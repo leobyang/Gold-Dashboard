@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import date, timedelta
 from typing import Optional, Tuple, List
+import os
 import math
 import numpy as np
 import pandas as pd
@@ -10,10 +11,12 @@ import streamlit as st
 st.set_page_config(page_title="Gold Dashboard", layout="wide")
 st.title("Gold Dashboard")
 
-DATA_FILE = Path("./gold_prices_v2.csv")
-CPI_FILE  = Path("./cpi_us.csv")
+DATA_FILE = Path("./gold_prices.csv")
+CPI_FILE  = Path("./cpi.csv")
 DXY_FILE  = Path("./dxy.csv")
-REAL_FILE = Path("./real_rate.csv")
+REAL_FILE = Path("./interest.csv")
+
+
 
 def _find_date_col(df: pd.DataFrame) -> str:
     for c in df.columns:
@@ -138,12 +141,22 @@ def join_on_date(*dfs: pd.DataFrame) -> pd.DataFrame:
         out = d if out is None else out.merge(d, on="date", how="outer")
     return out.sort_values("date").reset_index(drop=True)
 
+def file_sig(p: Path) -> str:
+    stt = os.stat(p)
+    return f"{stt.st_mtime_ns}-{stt.st_size}"
+
+@st.cache_data(show_spinner=True)
+def load_csv_cached(path: Path, sig: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
 if not DATA_FILE.exists():
     st.error(f"Local CSV not found: `{DATA_FILE.name}`. Put it next to this file or update DATA_FILE.")
     st.stop()
 
 try:
-    raw_df = pd.read_csv(DATA_FILE)
+    raw_df = load_csv_cached(DATA_FILE, file_sig(DATA_FILE))
     data = normalize_multi(raw_df)
 except Exception as e:
     st.error(f"Failed to read/normalize `{DATA_FILE.name}`: {e}")
@@ -259,7 +272,7 @@ with tab1:
     st.caption("Shaded red bands indicate **Bear** periods using the thresholds above.")
 
 with tab2:
-    st.subheader("CPI · US Dollar · Real Rate vs Gold")
+    st.subheader("CPI · US Dollar · Real Interest Rate vs Gold")
     colp = st.columns(4)
     with colp[0]:
         window = st.selectbox("Window", ["MAX","YTD","1Y","5Y","10Y"], index=2)
@@ -269,18 +282,27 @@ with tab2:
         show_corr = st.toggle("Show rolling correlations", value=True)
     with colp[3]:
         macro_currency = st.selectbox("Gold currency", [c for c in data.columns if c != "date"], index=0)
+
+
+    @st.cache_data(show_spinner=True)
+    def read_and_normalize_single(path: Path, sig: str) -> Optional[pd.DataFrame]:
+        df = pd.read_csv(path)
+        return normalize_single(df)
+
     def _safe_read(path: Path, label: str) -> Optional[pd.DataFrame]:
         if not path.exists():
             st.warning(f"Missing `{label}` file: {path.name}")
             return None
         try:
-            return normalize_single(pd.read_csv(path))
+            return read_and_normalize_single(path, file_sig(path))
         except Exception as e:
             st.error(f"Failed to read `{path.name}`: {e}")
             return None
+
     cpi = _safe_read(CPI_FILE, "CPI")
     dxy = _safe_read(DXY_FILE, "Dollar Index")
-    real = _safe_read(REAL_FILE, "Real Rate")
+    real = _safe_read(REAL_FILE, "Real Interest Rate")
+
     gold_df = data[["date", macro_currency]].rename(columns={macro_currency: "Gold_USD"})
     if cpi is not None:
         cpi_yoy = yoy(cpi)[["date","yoy"]].rename(columns={"yoy":"CPI_YoY"})
@@ -295,6 +317,7 @@ with tab2:
     if dxy is not None:     pieces.append(dxy)
     if real is not None:    pieces.append(real)
     macro = join_on_date(*pieces) if len(pieces) > 1 else gold_df.copy()
+
     dmax = macro["date"].max().date()
     if window == "MAX":
         dmin = macro["date"].min().date()
@@ -306,8 +329,10 @@ with tab2:
         dmin = dmax - timedelta(days=365*5)
     else:
         dmin = dmax - timedelta(days=365*10)
+
     mask = (macro["date"].dt.date >= dmin) & (macro["date"].dt.date <= dmax)
     mwin = macro.loc[mask].dropna(subset=["Gold_USD"]).reset_index(drop=True)
+
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(x=mwin["date"], y=mwin["Gold_USD"], mode="lines", name=f"Gold ({macro_currency})",
                               hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>"))
@@ -316,15 +341,35 @@ with tab2:
     if "CPI_YoY" in mwin:
         fig2.add_trace(go.Scatter(x=mwin["date"], y=mwin["CPI_YoY"]*100, mode="lines", name="CPI YoY (%)", yaxis="y2"))
     if "RealRate" in mwin:
-        fig2.add_trace(go.Scatter(x=mwin["date"], y=mwin["RealRate"], mode="lines", name="Real Rate (%)", yaxis="y2"))
+        fig2.add_trace(go.Scatter(x=mwin["date"], y=mwin["RealRate"], mode="lines", name="Real Interest Rate (%)", yaxis="y2"))
     fig2.update_layout(
-        height=520, hovermode="x unified", margin=dict(l=10,r=10,t=10,b=10),
-        xaxis=dict(title="Date", rangeslider=dict(visible=True)),
-        yaxis=dict(title=f"Gold ({macro_currency})"),
-        yaxis2=dict(title="Indexes / %", overlaying="y", side="right"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-    )
+    height=520, hovermode="x unified", margin=dict(l=10,r=10,t=10,b=10),
+    xaxis=dict(title="Date", rangeslider=dict(visible=True)),
+    yaxis=dict(title=f"Gold ({macro_currency})"),
+    yaxis2=dict(
+        title="Indexes / %",
+        overlaying="y",
+        side="right",
+        range=[0, 20]   # ← cap the percentage axis to 0–20%
+    ),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+)
     st.plotly_chart(fig2, use_container_width=True)
+
     if show_corr:
-        cols_needed = ["date","Gold_USD"]
-        if "USD_Index" in mwin: cols_needed.append("USD_Index")
+        corr_cols = []
+        if "USD_Index" in mwin: corr_cols.append("USD_Index")
+        if "CPI_YoY" in mwin: corr_cols.append("CPI_YoY")
+        if "RealRate" in mwin: corr_cols.append("RealRate")
+        if corr_cols:
+            corr_fig = go.Figure()
+            for c in corr_cols:
+                s = mwin["Gold_USD"].rolling(roll_days, min_periods=roll_days).corr(mwin[c])
+                corr_fig.add_trace(go.Scatter(x=mwin["date"], y=s, mode="lines", name=f"Corr(Gold, {c})"))
+            corr_fig.update_layout(
+                height=320, hovermode="x unified", margin=dict(l=10,r=10,t=10,b=10),
+                xaxis=dict(title="Date"),
+                yaxis=dict(title="Rolling correlation", range=[-1,1]),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+            )
+            st.plotly_chart(corr_fig, use_container_width=True)
