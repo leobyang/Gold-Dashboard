@@ -12,6 +12,9 @@ DATA_FILE = Path("./data/gold_prices.csv")
 CPI_FILE  = Path("./data/cpi.csv")
 DXY_FILE  = Path("./data/dxy.csv")
 REAL_FILE = Path("./data/interest.csv")
+SPX_FILE = Path("./data/spx.csv")
+BOND_FILE = Path("./data/bonds.csv")
+
 
 
 def _find_date_col(df: pd.DataFrame) -> str:
@@ -222,3 +225,9 @@ def load_macro_series():
     dxy  = safe_read_single(DXY_FILE,  "Dollar Index")
     real = safe_read_single(REAL_FILE, "Real Interest Rate")
     return cpi, dxy, real
+
+def load_compare_series():
+    spx   = safe_read_single(SPX_FILE,  "S&P500")
+    bonds = safe_read_single(BOND_FILE, "Bond Price")
+    cpi   = safe_read_single(CPI_FILE,  "CPI")
+    return spx, bonds, cpi
