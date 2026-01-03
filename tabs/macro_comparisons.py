@@ -21,6 +21,9 @@ def _plot_pair(
     if other is None:
         st.info(f"No {other_name} data.")
         return
+    
+    GOLD = "#DEB64B"
+    BG = "#0E1117"
 
     # Align gold and macro series on date
     df_gold = gold_series.rename(columns={macro_currency: "Gold"})
@@ -73,14 +76,16 @@ def _plot_pair(
 
     fig = go.Figure()
     fig.add_trace(
-        go.Scatter(
-            x=mwin["date"],
-            y=mwin["Gold"],
-            mode="lines",
-            name=f"Gold ({macro_currency})",
-            hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>",
-        )
+    go.Scatter(
+        x=mwin["date"],
+        y=mwin["Gold"],
+        mode="lines",
+        name=f"Gold ({macro_currency})",
+        line=dict(color=GOLD, width=2.5),
+        hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>",
     )
+    )
+
 
     right_name = other_name
     if "value" in mwin.columns:
@@ -102,18 +107,47 @@ def _plot_pair(
 
     # NOTE: no fixed range on yaxis2 -> Plotly autoscale, so you always see full series
     fig.update_layout(
-        height=520,
-        hovermode="x unified",
-        margin=dict(l=10, r=10, t=10, b=10),
-        xaxis=dict(title="Date", rangeslider=dict(visible=True)),
-        yaxis=dict(title=f"Gold ({macro_currency})"),
-        yaxis2=dict(
-            title=f"{right_name}" + (" / %" if y2_pct else ""),
-            overlaying="y",
-            side="right",
+    height=520,
+    hovermode="x unified",
+    margin=dict(l=10, r=10, t=10, b=10),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+
+    paper_bgcolor=BG,
+    plot_bgcolor=BG,
+    font=dict(color=GOLD),
+    hoverlabel=dict(font=dict(color=GOLD)),
+
+    xaxis=dict(
+        title="Date",
+        rangeslider=dict(
+            visible=True,
+            bgcolor=BG,
+            bordercolor="rgba(255,255,255,0.12)",
+            thickness=0.10,
         ),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        title_font=dict(color=GOLD),
+        tickfont=dict(color=GOLD),
+        gridcolor="rgba(255,255,255,0.08)",
+        zerolinecolor="rgba(255,255,255,0.12)",
+    ),
+    yaxis=dict(
+        title=f"Gold ({macro_currency})",
+        title_font=dict(color=GOLD),
+        tickfont=dict(color=GOLD),
+        gridcolor="rgba(255,255,255,0.08)",
+        zerolinecolor="rgba(255,255,255,0.12)",
+    ),
+    yaxis2=dict(
+        title=f"{right_name}" + (" / %" if y2_pct else ""),
+        overlaying="y",
+        side="right",
+        title_font=dict(color=GOLD),
+        tickfont=dict(color=GOLD),
+        gridcolor="rgba(255,255,255,0.08)",
+        zerolinecolor="rgba(255,255,255,0.12)",
+    ),
     )
+
     st.plotly_chart(fig, use_container_width=True)
 
     # Rolling correlation plot

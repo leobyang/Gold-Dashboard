@@ -69,12 +69,17 @@ def render_gold_prices_tab(data: pd.DataFrame):
     dd_df = compute_drawdown(win)
     regimes_df, seg_df = detect_regimes_coarse(win, bear_threshold=bear_thr, min_days=min_days)
 
+    GOLD = "#DEB64B"
+    BG = "#0E1117"
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=win["date"], y=win["price"], mode="lines",
-        name=f"Price ({currency})",
-        hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>",
+    x=win["date"], y=win["price"], mode="lines",
+    name=f"Price ({currency})",
+    line=dict(color=GOLD, width=2.5),
+    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>",
     ))
+
 
     # bear shading
     bear_spans: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
@@ -94,14 +99,40 @@ def render_gold_prices_tab(data: pd.DataFrame):
         fig.add_vrect(x0=a, x1=b, fillcolor="red", opacity=0.10, line_width=0, layer="below")
 
     fig.update_layout(
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=520,
-        hovermode="x unified",
-        xaxis_rangeslider_visible=True,
-        xaxis_title="Date",
-        yaxis_title=f"Price ({currency})",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    margin=dict(l=10, r=10, t=10, b=10),
+    height=520,
+    hovermode="x unified",
+    xaxis_rangeslider_visible=True,
+    xaxis_title="Date",
+    yaxis_title=f"Price ({currency})",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+
+    # theme-y stuff
+    paper_bgcolor=BG,
+    plot_bgcolor=BG,
+    font=dict(color=GOLD),
+    hoverlabel=dict(font=dict(color=GOLD)),  # unified hover label text
     )
+
+    fig.update_xaxes(
+    title_font=dict(color=GOLD),
+    tickfont=dict(color=GOLD),
+    gridcolor="rgba(255,255,255,0.08)",
+    zerolinecolor="rgba(255,255,255,0.12)",
+    rangeslider=dict(
+        bgcolor=BG,
+        bordercolor="rgba(255,255,255,0.12)",
+        thickness=0.10
+    ),
+)
+
+    fig.update_yaxes(
+    title_font=dict(color=GOLD),
+    tickfont=dict(color=GOLD),
+    gridcolor="rgba(255,255,255,0.08)",
+    zerolinecolor="rgba(255,255,255,0.12)",
+    )
+
     st.plotly_chart(fig, use_container_width=True)
 
     mdd, peak_dt, trough_dt, peak_px, trough_px, mdd_abs = window_stats(win)

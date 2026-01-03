@@ -29,6 +29,9 @@ def _compute_metrics(df: pd.DataFrame):
 def render_compare_tab(data: pd.DataFrame):
     st.subheader("Compare Historical Investments")
 
+    GOLD = "#DEB64B"
+    BG = "#0E1117"
+
     # Load S&P500 (spx), bonds, CPI
     spx, bonds, cpi = load_compare_series()
 
@@ -165,16 +168,62 @@ def render_compare_tab(data: pd.DataFrame):
 
     # Plot
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=w1_norm["date"], y=w1_norm["index"], mode="lines", name=inv1))
-    fig.add_trace(go.Scatter(x=w2_norm["date"], y=w2_norm["index"], mode="lines", name=inv2))
+
+    # Trace 1
+    t1 = go.Scatter(
+        x=w1_norm["date"],
+        y=w1_norm["index"],
+        mode="lines",
+        name=inv1,
+        hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>",
+    )
+    if inv1 == "Gold price":
+        t1.update(line=dict(color=GOLD, width=2.5))
+    fig.add_trace(t1)
+
+    # Trace 2
+    t2 = go.Scatter(
+        x=w2_norm["date"],
+        y=w2_norm["index"],
+        mode="lines",
+        name=inv2,
+        hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>",
+    )
+    if inv2 == "Gold price":
+        t2.update(line=dict(color=GOLD, width=2.5))
+    fig.add_trace(t2)
 
     fig.update_layout(
         height=520,
         hovermode="x unified",
         margin=dict(l=10, r=10, t=10, b=10),
-        xaxis=dict(title="Date", rangeslider=dict(visible=True)),
-        yaxis=dict(title="Indexed start = 100"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+
+        paper_bgcolor=BG,
+        plot_bgcolor=BG,
+        font=dict(color=GOLD),
+        hoverlabel=dict(font=dict(color=GOLD)),
+
+        xaxis=dict(
+            title="Date",
+            rangeslider=dict(
+                visible=True,
+                bgcolor=BG,
+                bordercolor="rgba(255,255,255,0.12)",
+                thickness=0.10,
+            ),
+            title_font=dict(color=GOLD),
+            tickfont=dict(color=GOLD),
+            gridcolor="rgba(255,255,255,0.08)",
+            zerolinecolor="rgba(255,255,255,0.12)",
+        ),
+        yaxis=dict(
+            title="Indexed start = 100",
+            title_font=dict(color=GOLD),
+            tickfont=dict(color=GOLD),
+            gridcolor="rgba(255,255,255,0.08)",
+            zerolinecolor="rgba(255,255,255,0.12)",
+        ),
     )
 
     st.plotly_chart(fig, use_container_width=True)

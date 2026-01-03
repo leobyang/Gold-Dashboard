@@ -3,7 +3,7 @@ import streamlit as st
 from functions import load_main_gold
 from tabs.gold_prices import render_gold_prices_tab
 from tabs.macro_comparisons import render_macro_tab
-from tabs.compare_investments import render_compare_tab   # NEW
+from tabs.compare_investments import render_compare_tab   
 
 
 def main():
