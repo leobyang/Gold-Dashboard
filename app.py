@@ -3,7 +3,8 @@ import streamlit as st
 from functions import load_main_gold
 from tabs.gold_prices import render_gold_prices_tab
 from tabs.macro_comparisons import render_macro_tab
-from tabs.compare_investments import render_compare_tab   
+from tabs.compare_investments import render_compare_tab 
+from tabs.scenario_analysis import render_scenario_tab  
 
 
 def main():
@@ -13,7 +14,7 @@ def main():
     data = load_main_gold()
 
     tab1, tab2, tab3 = st.tabs(
-        ["Gold Prices", "Macro Comparisons", "Compare Investments"]
+        ["Gold Prices", "Macro Comparisons", "Compare Investments", "Scenario Analysis"]
     )
 
     with tab1:
@@ -25,6 +26,8 @@ def main():
     with tab3:
         render_compare_tab(data)
 
+    with tab4:
+        render_scenario_tab(data)
 
 if __name__ == "__main__":
     main()
