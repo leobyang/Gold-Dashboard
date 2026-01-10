@@ -13,7 +13,7 @@ def main():
 
     data = load_main_gold()
 
-    tab1, tab2, tab3 = st.tabs(
+    tab1, tab2, tab3, tab4 = st.tabs(
         ["Gold Prices", "Macro Comparisons", "Compare Investments", "Scenario Analysis"]
     )
 
