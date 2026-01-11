@@ -1,8 +1,7 @@
-# tabs/scenario_analysis.py
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal
 
 import numpy as np
 import pandas as pd
@@ -16,10 +15,6 @@ Horizon = Literal["1W", "1M", "3M", "12M"]
 GOLD = "#DEB64B"
 BG = "#0E1117"
 
-
-# ---------------------------
-# Scenario Library (your mentor’s examples)
-# ---------------------------
 SCENARIOS: Dict[str, Dict[str, Any]] = {
     "A peaceful world": {
         "headline": "Global trade risks fade",
@@ -50,10 +45,6 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-
-# ---------------------------
-# Context from your dashboard data (so AI stays grounded)
-# ---------------------------
 @dataclass
 class DashboardContext:
     window_start: str
@@ -94,9 +85,6 @@ def _compute_context(data: pd.DataFrame, currency: str) -> DashboardContext:
     )
 
 
-# ---------------------------
-# Prompt builder: forces mentor-style driver decomposition
-# ---------------------------
 def _build_prompt(
     scenario_title: str,
     scenario_headline: str,
@@ -144,14 +132,7 @@ Return ONLY valid JSON with this exact schema:
   },
   "actions": [string, ...]
 }
-
-Rules:
-- Use the assumptions as the primary facts.
-- Do NOT invent precise statistics or claim specific ETF data.
-- Keep reasoning crisp (1–3 sentences each).
-- If the user_input contradicts assumptions, prefer user_input and mention conflict in risks.
 """
-
     prompt = f"""
 You are a macro/commodities analyst building a driver-based scenario analysis for gold.
 
@@ -161,12 +142,12 @@ Headline: {scenario_headline}
 Assumptions:
 - """ + "\n- ".join(assumptions) + f"""
 
-User additional input (may be empty):
+User additional input:
 {custom_text}
 
 Time horizon: {horizon}
 
-Dashboard context (computed from app; do not contradict):
+Dashboard context:
 {asdict(ctx)}
 
 {schema}
@@ -175,10 +156,6 @@ Dashboard context (computed from app; do not contradict):
 
 
 def _driver_score(drivers: List[Dict[str, Any]]) -> int:
-    """
-    Deterministic score from drivers (resume-grade, makes output consistent).
-    Up = +strength, Down = -strength, Mixed = 0. Clamp to [-10, 10].
-    """
     s = 0
     for d in drivers:
         direction = d.get("direction", "Mixed/Unclear")
@@ -198,17 +175,15 @@ def _validate(obj: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(obj["drivers"], list) or len(obj["drivers"]) != 3:
         raise ValueError("drivers must be a list of exactly 3 items")
 
-    # Ensure driver names exist; don’t hard fail if slightly off, but normalize order if needed
     expected = [
         "Risk & uncertainty (safe-haven demand)",
         "Opportunity cost (USD/DXY + real rates)",
         "ETF flows / investment demand",
     ]
 
-    # Light normalization: if names mismatch, keep whatever we got but warn
     names = [d.get("name", "") for d in obj["drivers"]]
     if names != expected:
-        obj["_warning"] = "Driver names/order did not exactly match expected. Output may be less consistent."
+        obj["_warning"] = "Driver names/order did not exactly match expected."
 
     return obj
 
@@ -224,17 +199,16 @@ def analyze_scenario_cached(
     model: str,
 ) -> Dict[str, Any]:
     prompt = _build_prompt(
-        scenario_title=scenario_title,
-        scenario_headline=scenario_headline,
-        assumptions=assumptions,
-        custom_text=custom_text,
-        horizon=horizon,
-        ctx=ctx,
+        scenario_title,
+        scenario_headline,
+        assumptions,
+        custom_text,
+        horizon,
+        ctx,
     )
     raw = ollama_generate_json(prompt=prompt, model=model, max_retries=1)
     out = _validate(raw)
 
-    # Deterministic score override (optional but recommended)
     out["net_view"]["score"] = _driver_score(out["drivers"])
     out["net_view"]["time_horizon"] = horizon
 
@@ -244,15 +218,10 @@ def analyze_scenario_cached(
 def render_scenario_tab(data: pd.DataFrame):
     st.subheader("Scenario Analysis")
 
-    # Ollama health check + helpful UX
     if not ollama_is_running():
-        st.error(
-            "Ollama is not reachable. Start it with `ollama serve` and make sure it listens on 127.0.0.1:11434."
-        )
-        st.caption("If Streamlit runs in Docker, set OLLAMA_HOST=http://host.docker.internal:11434")
+        st.error("Ollama is not reachable.")
         return
 
-    # Models dropdown
     try:
         tags = ollama_list_models()
         models = [m["name"] for m in tags.get("models", [])] or ["llama3.1"]
@@ -261,148 +230,46 @@ def render_scenario_tab(data: pd.DataFrame):
 
     gold_currencies = [c for c in data.columns if c != "date"]
     c1, c2, c3 = st.columns([1.2, 1.0, 1.0])
+
     with c1:
         currency = st.selectbox("Gold currency", gold_currencies, index=0, key="scen_currency")
     with c2:
-        horizon: Horizon = st.selectbox("Horizon", ["1W", "1M", "3M", "12M"], index=1)  # type: ignore
+        horizon: Horizon = st.selectbox("Horizon", ["1W", "1M", "3M", "12M"], index=1)
     with c3:
         model = st.selectbox("Ollama model", models, index=0)
 
-    st.markdown("### 1) Select an existing scenario")
     scenario_options = ["(Custom scenario)"] + list(SCENARIOS.keys())
     scenario_choice = st.selectbox("Scenario", scenario_options, index=1)
 
-
     if scenario_choice == "(Custom scenario)":
-        st.markdown("### Define your custom scenario")
+        scenario_title = st.text_input("Custom title", "My custom scenario")
+        scenario_headline = st.text_input("Custom headline", "Short description")
+        assumptions_text = st.text_area("Custom assumptions", height=140)
 
-        scenario_title = st.text_input(
-            "Custom title",
-            value="My custom scenario",
-            key="custom_scen_title",
-        )
-
-        scenario_headline = st.text_input(
-            "Custom headline",
-            value="Short description of the macro environment",
-            key="custom_scen_headline",
-        )
-
-        assumptions_text = st.text_area(
-            "Custom assumptions (one per line)",
-            value=(
-                "Example: DXY strengthens due to higher-for-longer Fed policy\n"
-                "Example: Real yields rise 50 bps\n"
-                "Example: Risk sentiment improves"
-            ),
-            height=140,
-            key="custom_scen_assumptions",
-        )
-
-        # Parse assumptions: one per line, strip bullets
         assumptions = [
             line.strip().lstrip("-•").strip()
             for line in assumptions_text.splitlines()
             if line.strip()
         ]
-
-        with st.expander("Assumptions preview", expanded=True):
-            if assumptions:
-                for a in assumptions:
-                    st.write(f"- {a}")
-            else:
-                st.warning("Add at least 1 assumption line.")
     else:
         scenario_title = scenario_choice
         scen = SCENARIOS[scenario_title]
         scenario_headline = scen["headline"]
         assumptions = scen["assumptions"]
 
-        st.write(f"**{scenario_title}** — {scenario_headline}")
-
-        with st.expander("Assumptions", expanded=True):
-            for a in assumptions:
-                st.write(f"- {a}")
-            if scen.get("notes"):
-                st.caption(scen["notes"])
-
-
-    st.markdown("### 2) (Optional) Add custom details")
-    custom_text = st.text_area(
-        "Add any extra scenario details (optional)",
-        placeholder="Example: 'DXY up 3% and real yields +50bps', or 'equity selloff triggers risk-off demand'.",
-        height=110,
-        key="scen_custom",
-    )
+    custom_text = st.text_area("Extra details (optional)", height=110)
 
     ctx = _compute_context(data, currency)
-    with st.expander("Computed context used (from your dashboard data)", expanded=False):
-        st.json(asdict(ctx))
 
     if st.button("Analyze drivers", type="primary"):
-        if scenario_choice == "(Custom scenario)" and len(assumptions) == 0:
-            st.error("Custom scenario requires at least 1 assumption.")
-            return
+        result = analyze_scenario_cached(
+            scenario_title,
+            scenario_headline,
+            assumptions,
+            custom_text.strip(),
+            horizon,
+            ctx,
+            model,
+        )
 
-        try:
-            with st.spinner("Running local AI analysis..."):
-                result = analyze_scenario_cached(
-                    scenario_title=scenario_title,
-                    scenario_headline=scenario_headline,
-                    assumptions=assumptions,
-                    custom_text=custom_text.strip(),
-                    horizon=horizon,
-                    ctx=ctx,
-                    model=model,
-                )
-
-        except Exception as e:
-            st.error(f"Scenario analysis failed: {e}")
-            st.info("Tip: confirm the model exists via `ollama list` and try again.")
-            return
-
-        if result.get("_warning"):
-            st.warning(result["_warning"])
-
-        st.markdown("## Output")
-
-        st.markdown("### Scenario summary")
-        s = result["scenario"]
-        st.write(f"**{s.get('title','')}** — {s.get('headline','')}")
-        st.write("**Assumptions:**")
-        st.write("- " + "\n- ".join(s.get("assumptions", [])))
-        if s.get("user_input"):
-            st.write("**User add-on:**")
-            st.write(s["user_input"])
-
-        st.markdown("### Driver impacts (Gold)")
-        drivers = result["drivers"]
-        for d in drivers:
-            with st.container(border=True):
-                st.write(f"**{d.get('name','Driver')}** — **{d.get('direction','Mixed/Unclear')}** "
-                         f"(strength: {d.get('strength',0)}/5)")
-                st.write(d.get("reasoning", ""))
-
-        st.markdown("### Net view")
-        nv = result["net_view"]
-        st.write(f"**Bias:** {nv.get('bias','')}")
-        st.write(f"**Score:** {nv.get('score','')}  (−10 bearish → +10 bullish)")
-        st.write(f"**Horizon:** {nv.get('time_horizon','')}")
-
-        risks = nv.get("key_risks", [])
-        if risks:
-            st.write("**Key risks:**")
-            st.write("- " + "\n- ".join(risks))
-
-        wcm = nv.get("what_would_change_my_mind", [])
-        if wcm:
-            st.write("**What would change the view:**")
-            st.write("- " + "\n- ".join(wcm))
-
-        st.markdown("### Suggested dashboard checks")
-        actions = result.get("actions", [])
-        if actions:
-            st.write("- " + "\n- ".join(actions))
-        else:
-            st.write("- Check Macro Comparisons: Gold vs DXY and Real Rate in the same window.")
-            st.write("- Check Gold Prices: regime/volatility changes around the scenario period.")
+        st.json(result)

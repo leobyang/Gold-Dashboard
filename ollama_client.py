@@ -1,20 +1,13 @@
-# ollama_client.py
 from __future__ import annotations
 
 import json
 import os
-import re
 from typing import Any, Dict, Optional
 
 import requests
 
 
 def _base_url() -> str:
-    """
-    Default to 127.0.0.1 (more reliable than localhost).
-    Allow override via OLLAMA_HOST, e.g.
-      export OLLAMA_HOST="http://host.docker.internal:11434"
-    """
     return os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 
 
@@ -33,15 +26,11 @@ def ollama_list_models(timeout: int = 5) -> Dict[str, Any]:
 
 
 def _extract_first_json_object(text: str) -> str:
-    """
-    Extract the first {...} JSON object from a model response that may include extra text.
-    """
     text = text.strip()
-    # Fast path: already JSON
+
     if text.startswith("{") and text.endswith("}"):
         return text
 
-    # Find first balanced JSON object by scanning braces
     start = text.find("{")
     if start == -1:
         raise ValueError(f"No JSON object found. Raw:\n{text}")
@@ -67,10 +56,6 @@ def ollama_generate_json(
     num_predict: int = 900,
     max_retries: int = 1,
 ) -> Dict[str, Any]:
-    """
-    Send a prompt to Ollama and return parsed JSON dict.
-    Retries once with a "fix to valid JSON" instruction if parsing fails.
-    """
     url = f"{_base_url()}/api/generate"
 
     payload = {
@@ -99,7 +84,6 @@ def ollama_generate_json(
             if attempt >= max_retries:
                 break
 
-            # Retry with explicit repair instruction
             payload["prompt"] = (
                 prompt
                 + "\n\nIMPORTANT: Your previous output was not valid JSON. "
